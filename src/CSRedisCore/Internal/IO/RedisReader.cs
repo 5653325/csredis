@@ -1,24 +1,23 @@
 ﻿using System;
 using System.IO;
+using System.Net.Sockets;
 using System.Text;
 
 namespace CSRedis.Internal.IO
 {
-    class RedisReader
+    internal partial class RedisReader
     {
-        readonly Stream _stream;
         readonly RedisIO _io;
 
         public RedisReader(RedisIO io)
         {
-            _stream = io.Stream;
             _io = io;
         }
 
         public RedisMessage ReadType()
         {
-            RedisMessage type = (RedisMessage)_stream.ReadByte();
-			//Console.WriteLine($"ReadType: {type}");
+            RedisMessage type = (RedisMessage)_io.ReadByte();
+            //Console.WriteLine($"ReadType: {type}");
             if (type == RedisMessage.Error)
                 throw new RedisException(ReadStatus(false));
             return type;
@@ -62,10 +61,10 @@ namespace CSRedis.Internal.IO
             int bytes_remaining = size;
 
             while (bytes_read < size)
-                bytes_read += _stream.Read(bulk, bytes_read, size - bytes_read);
+                bytes_read += _io.Read(bulk, bytes_read, size - bytes_read);
 
-			//Console.WriteLine($"ReadBulkBytes1: {Encoding.UTF8.GetString(bulk)}");
-			ExpectBytesRead(size, bytes_read);
+            //Console.WriteLine($"ReadBulkBytes1: {Encoding.UTF8.GetString(bulk)}");
+            ExpectBytesRead(size, bytes_read);
             ReadCRLF();
             return bulk;
         }
@@ -87,13 +86,13 @@ namespace CSRedis.Internal.IO
                 while (bytes_read < bytes_to_buffer)
                 {
                     int bytes_to_read = Math.Min(bytes_to_buffer - bytes_read, size - position);
-                    bytes_read += _stream.Read(buffer, bytes_read, bytes_to_read);
+                    bytes_read += _io.Read(buffer, bytes_read, bytes_to_read);
                 }
                 position += bytes_read;
                 destination.Write(buffer, 0, bytes_read);
             }
-			//Console.WriteLine($"ReadBulkBytes2: {Encoding.UTF8.GetString(buffer)}");
-			ExpectBytesRead(size, position);
+            //Console.WriteLine($"ReadBulkBytes2: {Encoding.UTF8.GetString(buffer)}");
+            ExpectBytesRead(size, position);
             ReadCRLF();
         }
 
@@ -109,9 +108,13 @@ namespace CSRedis.Internal.IO
         {
             RedisMessage type = ReadType();
             if ((int)type == -1)
-                throw new EndOfStreamException("Unexpected end of stream; expected type '" + expectedType + "'");
+            {
+                var alldata = _io.ReadAll();
+                try { _io.Dispose(); } catch { }
+                throw new EndOfStreamException($"Unexpected end of stream; expected type '{expectedType}'; data = '{Encoding.UTF8.GetString(alldata)}'");
+            }
             if (type != expectedType)
-                throw new RedisProtocolException(String.Format("Unexpected response type: {0} (expecting {1})", type, expectedType));
+                throw new RedisProtocolException($"Unexpected response type: {type} (expecting {expectedType})");
         }
 
         public void ExpectMultiBulk(long expectedSize)
@@ -134,10 +137,10 @@ namespace CSRedis.Internal.IO
 
         public void ReadCRLF() // TODO: remove hardcoded
         {
-            var r = _stream.ReadByte();
-            var n = _stream.ReadByte();
-			//Console.WriteLine($"ReadCRLF: {r} {n}");
-			if (r != (byte)13 && n != (byte)10)
+            var r = _io.ReadByte();
+            var n = _io.ReadByte();
+            //Console.WriteLine($"ReadCRLF: {r} {n}");
+            if (r != (byte)13 && n != (byte)10)
                 throw new RedisProtocolException(String.Format("Expecting CRLF; got bytes: {0}, {1}", r, n));
         }
 
@@ -187,7 +190,7 @@ namespace CSRedis.Internal.IO
             bool should_break = false;
             while (true)
             {
-                 c = (char)_stream.ReadByte();
+                c = (char)_io.ReadByte();
                 if (c == '\r') // TODO: remove hardcoded
                     should_break = true;
                 else if (c == '\n' && should_break)
@@ -198,8 +201,8 @@ namespace CSRedis.Internal.IO
                     should_break = false;
                 }
             }
-			//Console.WriteLine($"ReadLine: {sb.ToString()}");
-			return sb.ToString();
+            //Console.WriteLine($"ReadLine: {sb.ToString()}");
+            return sb.ToString();
         }
 
         void ExpectBytesRead(long expecting, long actual)

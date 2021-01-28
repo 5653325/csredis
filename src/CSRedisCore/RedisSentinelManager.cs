@@ -1,13 +1,19 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Threading.Tasks;
 
 // http://redis.io/topics/sentinel-clients
 
 namespace CSRedis
 {
+    /// <summary>
+    /// 哨兵主机转换委托
+    /// </summary>
+    /// <param name="master">哨兵返回的主机信息</param>
+    /// <returns>客户端可连接的主机信息</returns>
+    public delegate Tuple<string, int> SentinelMasterConverter(Tuple<string, int> master);
+
     /// <summary>
     /// Represents a managed connection to a Redis master instance via a set of Redis sentinel nodes
     /// </summary>
@@ -18,6 +24,7 @@ namespace CSRedis
         string _masterName;
         int _connectTimeout;
         RedisClient _redisClient;
+        bool _readOnly;
 
         /// <summary>
         /// Occurs when the master connection has sucessfully connected
@@ -28,8 +35,9 @@ namespace CSRedis
         /// Create a new RedisSentinenlManager
         /// </summary>
         /// <param name="sentinels">Sentinel addresses (host:ip)</param>
-        public RedisSentinelManager(params string[] sentinels)
+        public RedisSentinelManager(bool readOnly, params string[] sentinels)
         {
+            _readOnly = readOnly;
             _sentinels = new LinkedList<Tuple<string, int>>();
             foreach (var host in sentinels)
             {
@@ -75,12 +83,22 @@ namespace CSRedis
             _masterName = masterName;
             _connectTimeout = timeout;
 
-            string masterEndPoint = SetMaster(masterName, timeout);
-            if (masterEndPoint == null)
-                throw new IOException("Could not connect to sentinel or master");
+            if (_readOnly == false)
+            {
+                string masterEndPoint = SetMaster(masterName, timeout);
+                if (masterEndPoint == null)
+                    throw new IOException("Could not connect to sentinel or master");
+
+                _redisClient.ReconnectAttempts = 0;
+                return masterEndPoint;
+            }
+
+            string slaveEndPoint = SetSlave(masterName, timeout);
+            if (slaveEndPoint == null)
+                throw new IOException("Could not connect to sentinel or slave");
 
             _redisClient.ReconnectAttempts = 0;
-            return masterEndPoint;
+            return slaveEndPoint;
         }
 
         /// <summary>
@@ -115,6 +133,13 @@ namespace CSRedis
                 _redisClient.Dispose();
         }
 
+        /// <summary>
+        /// 哨兵主机转换委托
+        /// </summary>
+        /// <value>客户端可识别的主机转换委托</value>
+        public SentinelMasterConverter SentinelMasterConverter { get; set; }
+
+
         string SetMaster(string name, int timeout)
         {
             for (int i = 0; i < _sentinels.Count; i++)
@@ -138,31 +163,101 @@ namespace CSRedis
                     if (master == null)
                         continue;
 
-					if (_redisClient != null)
-						_redisClient.Dispose();
-					_redisClient = new RedisClient(master.Item1, master.Item2);
+                    if (_redisClient != null)
+                        _redisClient.Dispose();
+
+                    if (SentinelMasterConverter != null)
+                        master = SentinelMasterConverter(master);
+
+                    _redisClient = new RedisClient(master.Item1, master.Item2);
                     _redisClient.Connected += OnConnectionConnected;
 
-					try {
-						if (!_redisClient.Connect(timeout))
-							continue;
+                    try
+                    {
+                        if (!_redisClient.Connect(timeout))
+                            continue;
 
+                        var role = _redisClient.Role();
+                        if (role.RoleName != "master")
+                            continue;
 
-						var role = _redisClient.Role();
-						if (role.RoleName != "master")
-							continue;
+                        //测试 write
+                        var testid = Guid.NewGuid().ToString("N");
+                        _redisClient.StartPipe();
+                        _redisClient.Set(testid, 1);
+                        _redisClient.Del(testid);
+                        _redisClient.EndPipe();
 
-						foreach (var remoteSentinel in sentinel.Sentinels(name))
-							Add(remoteSentinel.Ip, remoteSentinel.Port);
+                        foreach (var remoteSentinel in sentinel.Sentinels(name))
+                            Add(remoteSentinel.Ip, remoteSentinel.Port);
 
-					} catch (Exception ex) {
+                    }
+                    catch (Exception ex)
+                    {
+                        Trace.WriteLine(ex.Message);
+                        Console.WriteLine(ex.Message);
+                        continue;
+                    }
 
-						Trace.WriteLine(ex.Message);
-						Console.WriteLine(ex.Message);
-						continue;
-					}
+                    return master.Item1 + ':' + master.Item2;
+                }
 
-					return master.Item1 + ':' + master.Item2;
+            }
+            return null;
+        }
+
+        string SetSlave(string name, int timeout)
+        {
+            for (int i = 0; i < _sentinels.Count; i++)
+            {
+                if (i > 0)
+                    Next();
+
+                using (var sentinel = Current())
+                {
+                    try
+                    {
+                        if (!sentinel.Connect(timeout))
+                            continue;
+                    }
+                    catch (Exception)
+                    {
+                        continue;
+                    }
+
+                    var slaves = sentinel.Slaves(name);
+                    if (slaves == null)
+                        continue;
+
+                    foreach (var slave in slaves)
+                    {
+                        if (_redisClient != null)
+                            _redisClient.Dispose();
+                        _redisClient = new RedisClient(slave.Ip, slave.Port);
+                        _redisClient.Connected += OnConnectionConnected;
+
+                        try
+                        {
+                            if (!_redisClient.Connect(timeout))
+                                continue;
+
+                            var role = _redisClient.Role();
+                            if (role.RoleName != "slave")
+                                continue;
+
+                            foreach (var remoteSentinel in sentinel.Sentinels(name))
+                                Add(remoteSentinel.Ip, remoteSentinel.Port);
+
+                        }
+                        catch (Exception ex)
+                        {
+                            Trace.WriteLine(ex.Message);
+                            Console.WriteLine(ex.Message);
+                            continue;
+                        }
+
+                        return slave.Ip + ':' + slave.Port;
+                    }
                 }
 
             }

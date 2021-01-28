@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace CSRedis.Internal.IO
 {
@@ -42,63 +43,79 @@ namespace CSRedis.Internal.IO
             _ssl = ssl;
         }
 
-        public void Connect(EndPoint endpoint)
-        {
-			Connect(endpoint, 5000);// -1);
-        }
-
         public void Connect(EndPoint endpoint, int timeout)
         {
             InitSocket(endpoint);
 
             IAsyncResult result = _socket.BeginConnect(endpoint, null, null);
-            if (!result.AsyncWaitHandle.WaitOne(timeout, true)) {
+            if (!result.AsyncWaitHandle.WaitOne(timeout, true))
                 throw new RedisSocketException("Connect to server timeout");
-            }
         }
 
-        public bool ConnectAsync(SocketAsyncEventArgs args)
+#if net40
+#else
+        TaskCompletionSource<bool> connectTcs;
+        public Task<bool> ConnectAsync(EndPoint endpoint)
         {
-            InitSocket(args.RemoteEndPoint);
-			return _socket.ConnectAsync(args);
-        }
+            InitSocket(endpoint);
 
-        public bool SendAsync(SocketAsyncEventArgs args)
-        {
-            return _socket.SendAsync(args);
+            if (connectTcs != null) connectTcs.TrySetCanceled();
+            connectTcs = new TaskCompletionSource<bool>();
+
+            _socket.BeginConnect(endpoint, asyncResult =>
+            {
+                try
+                {
+                    _socket.EndConnect(asyncResult);
+                    connectTcs.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    connectTcs.TrySetException(ex);
+                }
+            }, null);
+            return connectTcs.Task;
         }
+#endif
 
         public Stream GetStream()
         {
-            Stream netStream = new NetworkStream(_socket);
+            Stream netStream = new NetworkStream(_socket, true);
 
-			if (!_ssl) return netStream;
+            if (!_ssl) return netStream;
 
             var sslStream = new SslStream(netStream, true);
-			sslStream.AuthenticateAsClientAsync(GetHostForAuthentication()).Wait();
+#if net40
+            sslStream.AuthenticateAsClient(GetHostForAuthentication());
+#else
+            sslStream.AuthenticateAsClientAsync(GetHostForAuthentication()).Wait();
+#endif
             return sslStream;
         }
 
-		bool isDisposed = false;
-		public void Dispose()
+        bool isDisposed = false;
+        public void Dispose()
         {
-			if (isDisposed) return;
-			isDisposed = true;
-			try { _socket.Shutdown(SocketShutdown.Both); } catch { }
-			try { _socket.Close(); } catch { }
-			try { _socket.Dispose(); } catch { }
-		}
+            if (isDisposed) return;
+            isDisposed = true;
+            try { _socket.Shutdown(SocketShutdown.Both); } catch { }
+            try { _socket.Close(); } catch { }
+            try { _socket.Dispose(); } catch { }
+        }
 
         void InitSocket(EndPoint endpoint)
         {
-			if (_socket != null) {
-				try { _socket.Shutdown(SocketShutdown.Both); } catch { }
-				try { _socket.Close(); } catch { }
-				try { _socket.Dispose(); } catch { }
-			}
+            if (_socket != null)
+            {
+                try { _socket.Shutdown(SocketShutdown.Both); } catch { }
+                try { _socket.Close(); } catch { }
+                try { _socket.Dispose(); } catch { }
+            }
 
-			isDisposed = false;
-			_socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            isDisposed = false;
+            _socket = endpoint.AddressFamily == AddressFamily.InterNetworkV6 ?
+                new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp) :
+                new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             _remote = endpoint;
         }
 

@@ -6,7 +6,7 @@ using System.Text;
 
 namespace CSRedis.Internal
 {
-    class SubscriptionListener : RedisListner<RedisSubscriptionResponse>
+    class SubscriptionListener : RedisListener<RedisSubscriptionResponse>
     {
         long _count;
 
@@ -19,7 +19,7 @@ namespace CSRedis.Internal
 
         public void Send(RedisSubscription command)
         {
-			Write(command);
+            Write(command);
             if (!Listening)
                 Listen(command.Parse);
         }

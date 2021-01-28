@@ -24,19 +24,19 @@ namespace CSRedis.Internal.Utilities
                 for (int j = 0; j < arrays[i].Length; j++)
                 {
                     object obj = arrays[i][j];
-					output[pos++] = obj;// obj == null ? String.Empty : (obj is byte[] ? obj : String.Format(CultureInfo.InvariantCulture, "{0}", obj));
+                    output[pos++] = obj;// obj == null ? String.Empty : (obj is byte[] ? obj : String.Format(CultureInfo.InvariantCulture, "{0}", obj));
                 }
             }
             return output;
         }
 
-		/// <summary>
-		/// Joine string with arrays
-		/// </summary>
-		/// <param name="str">Leading string element</param>
-		/// <param name="arrays">Array to join</param>
-		/// <returns>Array of str and ToString() elements of arrays</returns>
-		public static object[] Concat(string str, params object[] arrays)
+        /// <summary>
+        /// Joine string with arrays
+        /// </summary>
+        /// <param name="str">Leading string element</param>
+        /// <param name="arrays">Array to join</param>
+        /// <returns>Array of str and ToString() elements of arrays</returns>
+        public static object[] Concat(string str, params object[] arrays)
         {
             return Concat(new[] { str }, arrays);
         }
@@ -63,11 +63,11 @@ namespace CSRedis.Internal.Utilities
         /// <param name="score">Numeric base score</param>
         /// <param name="isExclusive">Score is exclusive, rather than inclusive</param>
         /// <returns>String representing Redis score/range notation</returns>
-        public static string GetScore(double score, bool isExclusive)
+        public static string GetScore(decimal score, bool isExclusive)
         {
-            if (Double.IsNegativeInfinity(score) || score == Double.MinValue)
+            if (score == decimal.MinValue)
                 return "-inf";
-            else if (Double.IsPositiveInfinity(score) || score == Double.MaxValue)
+            else if (score == decimal.MaxValue)
                 return "+inf";
             else if (isExclusive)
                 return '(' + score.ToString();

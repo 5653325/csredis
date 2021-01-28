@@ -12,29 +12,28 @@ using System.Threading.Tasks;
 
 namespace CSRedis.Internal
 {
-	class RedisConnector
+    class RedisConnector
     {
         readonly int _concurrency;
         readonly int _bufferSize;
-        readonly Lazy<AsyncConnector> _asyncConnector;
         internal readonly IRedisSocket _redisSocket;
         readonly EndPoint _endPoint;
-        readonly RedisIO _io;
+        internal readonly RedisIO _io;
 
         public event EventHandler Connected;
 
-        public AsyncConnector Async { get { return _asyncConnector.Value; } }
         public bool IsConnected { get { return _redisSocket.Connected; } }
         public EndPoint EndPoint { get { return _endPoint; } }
         public bool IsPipelined { get { return _io.IsPipelined; } }
+        public RedisPipeline Pipeline { get { return _io.Pipeline; } }
         public int ReconnectAttempts { get; set; }
         public int ReconnectWait { get; set; }
-        public int ReceiveTimeout 
+        public int ReceiveTimeout
         {
             get { return _redisSocket.ReceiveTimeout; }
             set { _redisSocket.ReceiveTimeout = value; }
         }
-        public int SendTimeout 
+        public int SendTimeout
         {
             get { return _redisSocket.SendTimeout; }
             set { _redisSocket.SendTimeout = value; }
@@ -44,7 +43,7 @@ namespace CSRedis.Internal
             get { return _io.Encoding; }
             set { _io.Encoding = value; }
         }
-        
+
 
         public RedisConnector(EndPoint endPoint, IRedisSocket socket, int concurrency, int bufferSize)
         {
@@ -53,9 +52,8 @@ namespace CSRedis.Internal
             _endPoint = endPoint;
             _redisSocket = socket;
             _io = new RedisIO();
-            _asyncConnector = new Lazy<AsyncConnector>(AsyncConnectorFactory);
-			//_autoPipeline = new AutoPipelineOption(_io);
-		}
+            //_autoPipeline = new AutoPipelineOption(_io);
+        }
 
         public bool Connect(int timeout)
         {
@@ -67,13 +65,16 @@ namespace CSRedis.Internal
             return _redisSocket.Connected;
         }
 
+#if net40
+#else
         public Task<bool> ConnectAsync()
         {
-            return Async.ConnectAsync();
+            return _redisSocket.ConnectAsync(_endPoint);
         }
+#endif
 
-		//public IAutoPipelineOption AutoPipeline => _autoPipeline;
-		//AutoPipelineOption _autoPipeline;
+        //public IAutoPipelineOption AutoPipeline => _autoPipeline;
+        //AutoPipelineOption _autoPipeline;
 
         public T Call<T>(RedisCommand<T> command)
         {
@@ -84,10 +85,11 @@ namespace CSRedis.Internal
                 if (IsPipelined)
                     return _io.Pipeline.Write(command);
 
-				//if (_autoPipeline.IsEnabled)
-				//	return _autoPipeline.EnqueueSync(command);
+                //if (_autoPipeline.IsEnabled)
+                //	return _autoPipeline.EnqueueSync(command);
 
-				_io.Writer.Write(command, _io.Stream);
+                //Console.WriteLine("--------------Call " + command.ToString());
+                _io.Write(_io.Writer.Prepare(command));
                 return command.Parse(_io.Reader);
             }
             catch (IOException)
@@ -97,15 +99,47 @@ namespace CSRedis.Internal
                 Reconnect();
                 return Call(command);
             }
+            catch (RedisException ex)
+            {
+                throw new RedisException($"{ex.Message}\r\nCommand: {command}", ex);
+            }
         }
 
-        public Task<T> CallAsync<T>(RedisCommand<T> command)
+        public void CallNoneRead(RedisCommand command)
         {
-			//if (_autoPipeline.IsEnabled)
-			//	return _autoPipeline.EnqueueAsync(command);
+            ConnectIfNotConnected();
 
-			return Async.CallAsync(command);
+            try
+            {
+                //Console.WriteLine("--------------Call " + command.ToString());
+                _io.Write(_io.Writer.Prepare(command));
+            }
+            catch (IOException)
+            {
+                if (ReconnectAttempts == 0)
+                    throw;
+                Reconnect();
+                CallNoneRead(command);
+            }
+            catch (RedisException ex)
+            {
+                throw new RedisException($"{ex.Message}\r\nCommand: {command}", ex);
+            }
         }
+
+#if net40
+#else
+        async public Task<T> CallAsync<T>(RedisCommand<T> command)
+        {
+            //if (_autoPipeline.IsEnabled)
+            //	return _autoPipeline.EnqueueAsync(command);
+
+            //Console.WriteLine("--------------CallAsync");
+            await _io.WriteAsync(command);
+            //_io.Stream.BeginRead()
+            return command.Parse(_io.Reader);
+        }
+#endif
 
         public void Write(RedisCommand command)
         {
@@ -113,7 +147,8 @@ namespace CSRedis.Internal
 
             try
             {
-                _io.Writer.Write(command, _io.Stream);
+                //Console.WriteLine("--------------Write");
+                _io.Write(_io.Writer.Prepare(command));
             }
             catch (IOException)
             {
@@ -184,9 +219,6 @@ namespace CSRedis.Internal
 
         public void Dispose()
         {
-            if (_asyncConnector.IsValueCreated)
-                _asyncConnector.Value.Dispose();
-
             _io.Dispose();
 
             if (_redisSocket != null)
@@ -218,13 +250,6 @@ namespace CSRedis.Internal
         void OnAsyncConnected(object sender, EventArgs args)
         {
             OnConnected();
-        }
-
-        AsyncConnector AsyncConnectorFactory()
-        {
-            var connector = new AsyncConnector(_redisSocket, _endPoint, _io, _concurrency, _bufferSize);
-            connector.Connected += OnAsyncConnected;
-            return connector;
         }
 
         void ConnectIfNotConnected()
